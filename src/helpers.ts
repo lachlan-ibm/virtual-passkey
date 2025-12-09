@@ -154,12 +154,12 @@ export function signData(
 ): Buffer {
   if (algorithm === -7) {
     // ES256 signature
+    // WebAuthn spec requires DER encoding for ECDSA signatures
+    // The data passed here should already be: authenticatorData || hash(clientDataJSON)
+    // We sign this data directly with SHA256
     const sign = crypto.createSign('SHA256');
     sign.update(data);
-    return sign.sign({
-      key: privateKey,
-      dsaEncoding: 'ieee-p1363' // Raw signature format for WebAuthn
-    });
+    return sign.sign(privateKey); // DER encoding (default)
   } else if (algorithm === -257) {
     // RS256 signature
     const sign = crypto.createSign('SHA256');
