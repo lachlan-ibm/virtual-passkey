@@ -1,9 +1,13 @@
 import https from 'https';
 import { IncomingMessage } from 'http';
+import fs from 'fs';
+import assert from 'assert';
 import {
   PasskeyAuthenticator,
   PublicKeyCredentialCreationOptionsJSON,
-  PublicKeyCredentialRequestOptionsJSON
+  PublicKeyCredentialRequestOptionsJSON,
+  RegistrationResponseJSON,
+  AuthenticationResponseJSON
 } from '../src/index';
 
 const RP_URL = 'https://www.myidp.ibm.com';
@@ -229,16 +233,44 @@ async function performPasswordLogin(): Promise<void> {
 }
 
 /**
+ * Force EC algorithm by modifying the pubKeyCredParams
+ * @param options - The original credential creation options
+ * @returns Modified options with only ES256 algorithm
+ */
+function forceECAlgorithm(
+  options: PublicKeyCredentialCreationOptionsJSON
+): PublicKeyCredentialCreationOptionsJSON {
+  const modifiedOptions = { ...options };
+  
+  // Filter to only include ES256 (-7) algorithm
+  const ecParams = modifiedOptions.pubKeyCredParams.filter(param => param.alg === -7);
+  
+  if (ecParams.length === 0) {
+    // If ES256 is not in the list, add it
+    console.log('  ES256 not found in server options, adding it');
+    modifiedOptions.pubKeyCredParams = [
+      { type: 'public-key', alg: -7 }
+    ];
+  } else {
+    // Use only ES256
+    console.log('  Forcing ES256 algorithm (filtering out other algorithms)');
+    modifiedOptions.pubKeyCredParams = ecParams;
+  }
+  
+  return modifiedOptions;
+}
+
+/**
  * Result structure for passkey registration
  */
 interface RegistrationResult {
   options: PublicKeyCredentialCreationOptionsJSON;
-  attestation: unknown;
+  attestation: RegistrationResponseJSON;
   verification: HttpResponse<unknown>;
 }
 
 /**
- * Performs passkey registration flow
+ * Performs passkey registration flow with forced EC key
  * @param authenticator - The PasskeyAuthenticator instance
  * @returns Registration result containing options, attestation, and verification
  */
@@ -251,7 +283,13 @@ async function performRegistration(
     { username: USERNAME }
   );
   
-  const attestation = await authenticator.credentialCreate(regOptions.data as any);
+  console.log('  Original pubKeyCredParams:', regOptions.data.pubKeyCredParams);
+  
+  // Force EC algorithm
+  const modifiedOptions = forceECAlgorithm(regOptions.data);
+  console.log('  Modified pubKeyCredParams:', modifiedOptions.pubKeyCredParams);
+  
+  const attestation = await authenticator.credentialCreate(modifiedOptions as any);
   
   const regVerify = await makeRequest(
     `${RP_URL}${ATTESTATION_RESULT_PATH}`,
@@ -267,7 +305,7 @@ async function performRegistration(
  */
 interface AuthenticationResult {
   options: PublicKeyCredentialRequestOptionsJSON;
-  assertion: unknown;
+  assertion: AuthenticationResponseJSON;
   verification: HttpResponse<unknown>;
 }
 
@@ -302,28 +340,39 @@ async function performAuthentication(
  */
 async function main(): Promise<void> {
   try {
-    console.log('Testing PasskeyAuthenticator with', RP_URL);
+    console.log('Testing PasskeyAuthenticator with EC keys at', RP_URL);
 
-    // Phase 1: Bootstrap Authentication
+    // Bootstrap Authentication
     console.log("\n=== Get session cookie via Password Authentication ===");
     await performPasswordLogin();
 
-    // Phase 2: Passkey Registration
-    const authenticator = new PasskeyAuthenticator();
-    console.log('\n=== REGISTRATION ===');
+    // Passkey Registration with EC
+    const authenticator = new PasskeyAuthenticator(undefined, true);
+    console.log('\n=== REGISTRATION (EC) ===');
     const regResult = await performRegistration(authenticator);
     console.log('Attestation Options:', regResult.options);
     console.log('Attestation Response:', regResult.attestation);
     console.log('Registration Result:', regResult.verification);
 
-    // Phase 3: Passkey Authentication
+    // Passkey Authentication
     console.log('\n=== AUTHENTICATION ===');
     const authResult = await performAuthentication(authenticator);
     console.log('Assertion Options:', authResult.options);
     console.log('Assertion Response:', authResult.assertion);
     console.log('Authentication Result:', authResult.verification);
 
-    console.log('\n  Test complete - All phases successful');
+
+    console.log('Write EC key to virtual.passkey.ec.pem');
+    const exportSuccess = authenticator.exportCredentialKey(regResult.attestation.id, 'virtual.passkey.ec.pem');
+    
+    assert(exportSuccess, 'Credential key export failed - credential not found');
+    console.log('  EC credential key exported successfully');
+    
+    console.log('Write credential ID to virtual.passkey.ec.credid');
+    fs.writeFileSync('virtual.passkey.ec.credid', regResult.attestation.id);
+    console.log('  Credential ID written successfully');
+
+    console.log('\n  Test complete - All phases successful with EC keys');
   } catch (error) {
     console.error('\n  Test failed:', error instanceof Error ? error.message : error);
     throw error;

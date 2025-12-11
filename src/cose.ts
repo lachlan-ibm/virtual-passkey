@@ -155,14 +155,22 @@ function parseDERInteger(
 
 /**
  * Extract RSA public key components from DER-encoded key
- * 
- * Parses a DER-encoded RSA public key in the format:
+ *
+ * Parses a DER-encoded RSA public key in SPKI (SubjectPublicKeyInfo) format:
  * SEQUENCE {
- *   modulus INTEGER,
- *   exponent INTEGER
+ *   SEQUENCE {
+ *     OBJECT IDENTIFIER rsaEncryption
+ *     NULL
+ *   }
+ *   BIT STRING {
+ *     SEQUENCE {
+ *       modulus INTEGER,
+ *       exponent INTEGER
+ *     }
+ *   }
  * }
- * 
- * @param derKey - DER-encoded RSA public key
+ *
+ * @param derKey - DER-encoded RSA public key in SPKI format
  * @returns Object containing the modulus (n) and exponent (e) as Uint8Arrays
  * @throws Error if the input is invalid or malformed
  */
@@ -178,7 +186,7 @@ function extractRSAPublicKey(derKey: Uint8Array): { n: Uint8Array; e: Uint8Array
   
   let offset = 0;
   
-  // Parse SEQUENCE tag
+  // Parse outer SEQUENCE tag (SPKI wrapper)
   if (derKey[offset] !== DER_TAG_SEQUENCE) {
     throw new Error(
       `Invalid RSA public key: expected SEQUENCE tag (0x30) at offset ${offset}, got 0x${derKey[offset].toString(16)}`
@@ -186,9 +194,52 @@ function extractRSAPublicKey(derKey: Uint8Array): { n: Uint8Array; e: Uint8Array
   }
   offset++;
   
-  // Parse SEQUENCE length
-  const { bytesRead: sequenceLengthBytes } = parseDERLength(derKey, offset);
-  offset += sequenceLengthBytes;
+  // Parse outer SEQUENCE length
+  const { bytesRead: outerSequenceLengthBytes } = parseDERLength(derKey, offset);
+  offset += outerSequenceLengthBytes;
+  
+  // Parse algorithm identifier SEQUENCE
+  if (derKey[offset] !== DER_TAG_SEQUENCE) {
+    throw new Error(
+      `Invalid RSA public key: expected algorithm SEQUENCE tag (0x30) at offset ${offset}, got 0x${derKey[offset].toString(16)}`
+    );
+  }
+  offset++;
+  
+  // Parse algorithm SEQUENCE length
+  const { length: algSeqLength, bytesRead: algSeqLengthBytes } = parseDERLength(derKey, offset);
+  offset += algSeqLengthBytes;
+  
+  // Skip the algorithm identifier SEQUENCE content (OID + NULL)
+  offset += algSeqLength;
+  
+  // Parse BIT STRING tag
+  const BIT_STRING_TAG = 0x03;
+  if (derKey[offset] !== BIT_STRING_TAG) {
+    throw new Error(
+      `Invalid RSA public key: expected BIT STRING tag (0x03) at offset ${offset}, got 0x${derKey[offset].toString(16)}`
+    );
+  }
+  offset++;
+  
+  // Parse BIT STRING length
+  const { bytesRead: bitStringLengthBytes } = parseDERLength(derKey, offset);
+  offset += bitStringLengthBytes;
+  
+  // Skip the unused bits byte (should be 0x00)
+  offset++;
+  
+  // Now we're at the actual RSA key SEQUENCE
+  if (derKey[offset] !== DER_TAG_SEQUENCE) {
+    throw new Error(
+      `Invalid RSA public key: expected RSA key SEQUENCE tag (0x30) at offset ${offset}, got 0x${derKey[offset].toString(16)}`
+    );
+  }
+  offset++;
+  
+  // Parse RSA key SEQUENCE length
+  const { bytesRead: rsaSeqLengthBytes } = parseDERLength(derKey, offset);
+  offset += rsaSeqLengthBytes;
   
   // Parse modulus (n)
   const { value: n, bytesRead: nBytesRead } = parseDERInteger(derKey, offset, 'modulus');

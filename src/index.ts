@@ -163,9 +163,9 @@ export interface StoredCredential {
   rpId: string;
   
   /**
-   * User handle
+   * User handle (optional)
    */
-  userHandle: Uint8Array;
+  userHandle?: Uint8Array;
   
   /**
    * Algorithm used (-7 for ES256, -257 for RS256)
@@ -180,15 +180,17 @@ export interface StoredCredential {
 export class PasskeyAuthenticator {
   private credentials: Map<string, StoredCredential>;
   private aaguid: Uint8Array;
+  private disableCounter: boolean;
 
   /**
    * Creates a new PasskeyAuthenticator instance
    * @param aaguid - Optional Authenticator Attestation GUID (16 bytes)
+   * @param disableCounter - If true, counter will always remain at 0 and not increment
    */
-  constructor(aaguid?: Uint8Array) {
+  constructor(aaguid?: Uint8Array, disableCounter: boolean = false) {
     this.credentials = new Map();
-    // Default AAGUID if not provided (all zeros)
     this.aaguid = aaguid || new Uint8Array(16);
+    this.disableCounter = disableCounter;
   }
 
   // Constant for credential ID size
@@ -369,14 +371,13 @@ export class PasskeyAuthenticator {
     userId: string,
     algorithm: number
   ): void {
-    const userHandle = base64urlToUint8Array(userId);
     const credential: StoredCredential = {
       credentialId: new Uint8Array(credentialId),
       privateKey,
       publicKey,
       counter: 0,
       rpId,
-      userHandle,
+      userHandle: base64urlToUint8Array(userId),
       algorithm
     };
     
@@ -455,8 +456,10 @@ export class PasskeyAuthenticator {
      credential.privateKey = keyData.privateKey;
    }
     
-    // Increment counter
-    credential.counter++;
+   // Increment counter (unless disabled)
+   if (!this.disableCounter) {
+     credential.counter++;
+   }
     
     // Build assertion components
     const authenticatorData = buildAssertionAuthData(rpId, credential.counter);
@@ -501,17 +504,22 @@ export class PasskeyAuthenticator {
     clientDataJSON: Buffer,
     authenticatorData: Buffer,
     signature: Buffer,
-    userHandle: Uint8Array
+    userHandle?: Uint8Array
   ): AuthenticationResponseJSON {
+    const response: AuthenticatorAssertionResponseJSON = {
+      clientDataJSON: uint8ArrayToBase64url(new Uint8Array(clientDataJSON)),
+      authenticatorData: uint8ArrayToBase64url(new Uint8Array(authenticatorData)),
+      signature: uint8ArrayToBase64url(new Uint8Array(signature))
+    };
+    
+    if (userHandle) {
+      response.userHandle = uint8ArrayToBase64url(userHandle);
+    }
+    
     return {
       id: credentialIdString,
       rawId: credentialIdString,
-      response: {
-        clientDataJSON: uint8ArrayToBase64url(new Uint8Array(clientDataJSON)),
-        authenticatorData: uint8ArrayToBase64url(new Uint8Array(authenticatorData)),
-        signature: uint8ArrayToBase64url(new Uint8Array(signature)),
-        userHandle: uint8ArrayToBase64url(userHandle)
-      },
+      response,
       type: 'public-key',
       clientExtensionResults: {},
       authenticatorAttachment: 'platform'
