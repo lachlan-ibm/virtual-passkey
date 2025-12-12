@@ -1,5 +1,6 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import { ml_dsa44 } from '@noble/post-quantum/ml-dsa.js';
 import { CBOREncoder } from './cbor';
 import { encodeCOSEPublicKey } from './cose';
 
@@ -64,6 +65,34 @@ export function generateKeyPair(algorithm: number): KeyPairResult {
     return {
       privateKey: keyPair.privateKey,
       publicKeyBytes
+    };
+  } else if (algorithm === -8) {
+    // Ed25519: EdDSA with Ed25519 curve
+    const keyPair = crypto.generateKeyPairSync('ed25519');
+    
+    // Extract raw public key (32 bytes)
+    // Ed25519 public key in SPKI format: last 32 bytes are the raw public key
+    const publicKeyDer = keyPair.publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
+    const publicKeyBytes = new Uint8Array(publicKeyDer.slice(-32));
+    
+    return {
+      privateKey: keyPair.privateKey,
+      publicKeyBytes
+    };
+  } else if (algorithm === -48) {
+    // ML-DSA-44: Module-Lattice-Based Digital Signature Algorithm (FIPS 204)
+    const keyPair = ml_dsa44.keygen();
+    
+    // ML-DSA-44 returns { publicKey: Uint8Array, secretKey: Uint8Array }
+    // Store it as a custom object since Node.js crypto doesn't support ML-DSA natively
+    const privateKey = {
+      type: 'ml-dsa-44',
+      secretKey: keyPair.secretKey
+    } as any;
+    
+    return {
+      privateKey: privateKey as crypto.KeyObject,
+      publicKeyBytes: keyPair.publicKey
     };
   } else {
     throw new Error(`Unsupported algorithm: ${algorithm}`);
@@ -152,11 +181,11 @@ export function signData(
   privateKey: crypto.KeyObject,
   algorithm: number
 ): Buffer {
+  // The data passed here should already be: authenticatorData || hash(clientDataJSON)
   if (algorithm === -7) {
     // ES256 signature
     // WebAuthn spec requires DER encoding for ECDSA signatures
-    // The data passed here should already be: authenticatorData || hash(clientDataJSON)
-    // We sign this data directly with SHA256
+
     const sign = crypto.createSign('SHA256');
     sign.update(data);
     return sign.sign(privateKey); // DER encoding (default)
@@ -165,6 +194,22 @@ export function signData(
     const sign = crypto.createSign('SHA256');
     sign.update(data);
     return sign.sign(privateKey);
+  } else if (algorithm === -8) {
+    // Ed25519 signature
+    // EdDSA doesn't require specifying a hash algorithm
+    return crypto.sign(null, data, {
+      key: privateKey,
+      dsaEncoding: 'der'
+    });
+  } else if (algorithm === -48) {
+    // ML-DSA-44 signature
+    const mldsaKey = privateKey as any;
+    if (mldsaKey.type !== 'ml-dsa-44') {
+      throw new Error('Invalid ML-DSA-44 key');
+    }
+    // The secretKey is the full encoded secret key from keygen
+    const signature = ml_dsa44.sign(new Uint8Array(data), mldsaKey.secretKey);
+    return Buffer.from(signature);
   } else {
     throw new Error(`Unsupported algorithm: ${algorithm}`);
   }
@@ -199,11 +244,11 @@ export function createPackedAttestation(
  */
 export function selectAlgorithm(pubKeyCredParams: Array<{ alg: number; type: string }>): number {
   const supportedAlgs = pubKeyCredParams.filter(
-    param => param.alg === -7 || param.alg === -257
+    param => param.alg === -7 || param.alg === -257 || param.alg === -8 || param.alg === -48
   );
   
   if (supportedAlgs.length === 0) {
-    throw new Error('No supported algorithms found (ES256 or RS256 required)');
+    throw new Error('No supported algorithms found (ES256, RS256, Ed25519, or ML-DSA-44 required)');
   }
   
   return supportedAlgs[0].alg;
@@ -224,8 +269,33 @@ export function readPKCS8PrivateKey(filePath: string): crypto.KeyObject | null {
     // Read the file
     const keyData = fs.readFileSync(filePath, 'utf8');
     
+    // Check if it's an ML-DSA-44 key (custom format)
+    if (keyData.includes('-----BEGIN ML-DSA-44 PRIVATE KEY-----')) {
+      // Extract the base64 data between the markers
+      const base64Data = keyData
+        .replace('-----BEGIN ML-DSA-44 PRIVATE KEY-----', '')
+        .replace('-----END ML-DSA-44 PRIVATE KEY-----', '')
+        .replace(/\s/g, '');
+      
+      // Decode the base64 data
+      const keyBuffer = Buffer.from(base64Data, 'base64');
+      
+      // ML-DSA-44 encoded secret key is 2560 bytes
+      if (keyBuffer.length !== 2560) {
+        throw new Error(`Invalid ML-DSA-44 key length: expected 2560 bytes, got ${keyBuffer.length}`);
+      }
+      
+      const secretKey = new Uint8Array(keyBuffer);
+      
+      // Return as custom object
+      return {
+        type: 'ml-dsa-44',
+        secretKey
+      } as any;
+    }
+    
     // Validate it's a PKCS8 format
-    if (!keyData.includes('-----BEGIN PRIVATE KEY-----') || 
+    if (!keyData.includes('-----BEGIN PRIVATE KEY-----') ||
         !keyData.includes('-----END PRIVATE KEY-----')) {
       throw new Error('Invalid PKCS8 format: missing BEGIN/END PRIVATE KEY markers');
     }
@@ -250,6 +320,20 @@ export function readPKCS8PrivateKey(filePath: string): crypto.KeyObject | null {
  */
 export function writePKCS8PrivateKey(privateKey: crypto.KeyObject, filePath: string): void {
   try {
+    // Check if it's an ML-DSA-44 key (custom object)
+    const mldsaKey = privateKey as any;
+    if (mldsaKey.type === 'ml-dsa-44') {
+      // The secretKey is already the full encoded secret key (2560 bytes)
+      const base64Data = Buffer.from(mldsaKey.secretKey).toString('base64');
+      
+      // Format with PEM markers
+      const pemData = `-----BEGIN ML-DSA-44 PRIVATE KEY-----\n${base64Data.match(/.{1,64}/g)?.join('\n')}\n-----END ML-DSA-44 PRIVATE KEY-----\n`;
+      
+      // Write to file
+      fs.writeFileSync(filePath, pemData, 'utf8');
+      return;
+    }
+    
     // Export private key in PKCS8 PEM format
     const keyData = privateKey.export({
       type: 'pkcs8',
@@ -273,6 +357,16 @@ export function extractPublicKeyFromPrivate(
   privateKey: crypto.KeyObject,
   algorithm: number
 ): Uint8Array {
+  if (algorithm === -48) {
+    // ML-DSA-44: Extract public key from the encoded secret key
+    const mldsaKey = privateKey as any;
+    if (mldsaKey.type !== 'ml-dsa-44') {
+      throw new Error('Invalid ML-DSA-44 key');
+    }
+    // Use ml_dsa44.getPublicKey to extract public key from secret key
+    return ml_dsa44.getPublicKey(mldsaKey.secretKey);
+  }
+  
   // Export the public key from the private key
   const publicKey = crypto.createPublicKey(privateKey);
   
@@ -284,6 +378,10 @@ export function extractPublicKeyFromPrivate(
     // RS256: Export full DER format
     const publicKeyDer = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
     return new Uint8Array(publicKeyDer);
+  } else if (algorithm === -8) {
+    // Ed25519: Extract raw public key (32 bytes)
+    const publicKeyDer = publicKey.export({ type: 'spki', format: 'der' }) as Buffer;
+    return new Uint8Array(publicKeyDer.slice(-32));
   } else {
     throw new Error(`Unsupported algorithm: ${algorithm}`);
   }
@@ -295,6 +393,12 @@ export function extractPublicKeyFromPrivate(
  * @returns Algorithm number (-7 for ES256, -257 for RS256)
  */
 export function detectAlgorithmFromKey(privateKey: crypto.KeyObject): number {
+  // Check if it's an ML-DSA-44 key (custom object)
+  const mldsaKey = privateKey as any;
+  if (mldsaKey.type === 'ml-dsa-44') {
+    return -48; // ML-DSA-44
+  }
+  
   const keyType = privateKey.asymmetricKeyType;
   
   if (keyType === 'ec') {
@@ -306,6 +410,8 @@ export function detectAlgorithmFromKey(privateKey: crypto.KeyObject): number {
     throw new Error('Only P-256 (prime256v1) EC keys are supported');
   } else if (keyType === 'rsa') {
     return -257; // RS256
+  } else if (keyType === 'ed25519') {
+    return -8; // Ed25519
   } else {
     throw new Error(`Unsupported key type: ${keyType}`);
   }

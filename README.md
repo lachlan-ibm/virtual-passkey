@@ -47,8 +47,10 @@ const creationOptions = {
     displayName: "John Doe"
   },
   pubKeyCredParams: [
-    { alg: -7, type: "public-key" },  // ES256
-    { alg: -257, type: "public-key" } // RS256
+    { alg: -7, type: "public-key" },   // ES256
+    { alg: -257, type: "public-key" }, // RS256
+    { alg: -8, type: "public-key" },   // Ed25519
+    { alg: -48, type: "public-key" }   // ML-DSA-44
   ],
   timeout: 60000,
   attestation: "none",
@@ -138,6 +140,8 @@ if (exported) {
 **Supported Key Types:**
 - **ES256 (ECDSA with P-256)**: Elliptic curve keys using the prime256v1 curve
 - **RS256 (RSA with SHA-256)**: RSA keys with 2048-bit modulus
+- **Ed25519 (EdDSA)**: Edwards-curve Digital Signature Algorithm
+- **ML-DSA-44 (Module-Lattice-Based DSA)**: Post-quantum signature algorithm (FIPS 204)
 
 **Generating PKCS8 Keys with OpenSSL:**
 
@@ -148,7 +152,12 @@ openssl ecparam -name prime256v1 -genkey -noout -out es256-private-key.pem
 # Generate RS256 (RSA 2048) key
 openssl genrsa -out rsa-private-key.pem 2048
 openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt -in rsa-private-key.pem -out rs256-private-key.pem
+
+# Generate Ed25519 key
+openssl genpkey -algorithm ed25519 -out ed25519-private-key.pem
 ```
+
+**Note:** ML-DSA-44 keys are generated internally using the `@noble/post-quantum` library and cannot be generated with OpenSSL. The authenticator will automatically generate ML-DSA-44 keys when the algorithm is requested.
 
 ### Managing Credentials
 
@@ -275,7 +284,7 @@ async function completeWebAuthnFlow() {
     // Attestation type
     attestationType: 'none',
     // Supported algorithms
-    supportedAlgorithmIDs: [-7, -257], // ES256, RS256
+    supportedAlgorithmIDs: [-7, -257, -8, -48], // ES256, RS256, Ed25519, ML-DSA-44
   });
 
   console.log('Server generated registration options');
@@ -482,6 +491,36 @@ Removes a credential. Returns `true` if successful.
 
 Removes all stored credentials.
 
+## Supported Algorithms
+
+This authenticator supports the following COSE algorithms:
+
+| Algorithm | COSE ID | Description | Key Size | Signature Size |
+|-----------|---------|-------------|----------|----------------|
+| ES256 | -7 | ECDSA with P-256 and SHA-256 | 256-bit | ~72 bytes (DER) |
+| RS256 | -257 | RSASSA-PKCS1-v1_5 with SHA-256 | 2048-bit | 256 bytes |
+| Ed25519 | -8 | EdDSA with Ed25519 curve | 256-bit | 64 bytes |
+| ML-DSA-44 | -48 | Module-Lattice-Based DSA (FIPS 204) | 1312 bytes | 2420 bytes |
+
+
+**Usage Example:**
+
+```typescript
+const authenticator = new PasskeyAuthenticator();
+
+// Request ML-DSA-44 algorithm
+const creationOptions = {
+  challenge: "challenge",
+  rp: { name: "Example", id: "example.com" },
+  user: { id: "user-123", name: "user@example.com", displayName: "User" },
+  pubKeyCredParams: [
+    { alg: -48, type: "public-key" }  // ML-DSA-44
+  ]
+};
+
+const attestation = await authenticator.credentialCreate(creationOptions);
+```
+
 ## Types
 
 The module exports the following TypeScript types:
@@ -514,3 +553,5 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - [WebAuthn Specification](https://www.w3.org/TR/webauthn-2/)
 - [FIDO2 Project](https://fidoalliance.org/fido2/)
 - [SimpleWebAuthn Documentation](https://simplewebauthn.dev/)
+- [FIPS 204: Module-Lattice-Based Digital Signature Standard](https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.204.pdf)
+- [Noble Post-Quantum Library](https://github.com/paulmillr/noble-post-quantum)

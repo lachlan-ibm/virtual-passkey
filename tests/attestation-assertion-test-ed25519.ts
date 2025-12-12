@@ -21,28 +21,26 @@ const SECRET = process.argv[4] || "passw0rd";
 const testHelper = new TestHelper(RP_URL);
 
 /**
- * Force RSA algorithm by modifying the pubKeyCredParams
+ * Force ED25519 algorithm by modifying the pubKeyCredParams
  * @param options - The original credential creation options
- * @returns Modified options with only RS256 algorithm
+ * @returns Modified options with only ES256 algorithm
  */
-function forceRSAAlgorithm(
+function forceEDAlgorithm(
   options: PublicKeyCredentialCreationOptionsJSON
 ): PublicKeyCredentialCreationOptionsJSON {
   const modifiedOptions = { ...options };
   
-  // Filter to only include RS256 (-257) algorithm
-  const rsaParams = modifiedOptions.pubKeyCredParams.filter(param => param.alg === -257);
+  // Filter to only include ED25519 (-8) algorithm
+  const edParams = modifiedOptions.pubKeyCredParams.filter(param => param.alg === -8);
   
-  if (rsaParams.length === 0) {
-    // If RS256 is not in the list, add it
-    console.log('  RS256 not found in server options, adding it');
+  if (edParams.length === 0) {
+    console.log('  ED25519 not found in server options, adding it');
     modifiedOptions.pubKeyCredParams = [
-      { type: 'public-key', alg: -257 }
+      { type: 'public-key', alg: -8 }
     ];
   } else {
-    // Use only RS256
-    console.log('  Forcing RS256 algorithm (filtering out other algorithms)');
-    modifiedOptions.pubKeyCredParams = rsaParams;
+    console.log('  Forcing ED25519 algorithm (filtering out other algorithms)');
+    modifiedOptions.pubKeyCredParams = edParams;
   }
   
   return modifiedOptions;
@@ -58,7 +56,7 @@ interface RegistrationResult {
 }
 
 /**
- * Performs passkey registration flow with forced RSA key
+ * Performs passkey registration flow with forced EC key
  * @param authenticator - The PasskeyAuthenticator instance
  * @returns Registration result containing options, attestation, and verification
  */
@@ -73,7 +71,7 @@ async function performRegistration(
   
   console.log('  Original pubKeyCredParams:', regOptions.data.pubKeyCredParams);
   
-  const modifiedOptions = forceRSAAlgorithm(regOptions.data);
+  const modifiedOptions = forceEDAlgorithm(regOptions.data);
   console.log('  Modified pubKeyCredParams:', modifiedOptions.pubKeyCredParams);
   
   const attestation = await authenticator.credentialCreate(modifiedOptions as any);
@@ -122,19 +120,19 @@ async function performAuthentication(
 }
 
 /**
- * Main test function that orchestrates the complete passkey flow with RSA keys
- * Performs login, registration with RSA, and authentication in sequence
+ * Main test function that orchestrates the complete passkey flow
+ * Performs login, registration, and authentication in sequence
  */
 async function main(): Promise<void> {
   try {
-    console.log('Testing PasskeyAuthenticator with RSA keys at', testHelper.getRpUrl());
+    console.log('Testing PasskeyAuthenticator with ED25519 keys at', testHelper.getRpUrl());
 
     console.log("\n=== Get session cookie via Password Authentication ===");
     await testHelper.performPasswordLogin(USERNAME, SECRET);
 
-    // Passkey Registration with RSA
+    // Passkey Registration with EC
     const authenticator = new PasskeyAuthenticator(undefined, true);
-    console.log('\n=== REGISTRATION (RSA) ===');
+    console.log('\n=== REGISTRATION (ED25519) ===');
     const regResult = await performRegistration(authenticator);
     console.log('Attestation Options:', regResult.options);
     console.log('Attestation Response:', regResult.attestation);
@@ -148,17 +146,17 @@ async function main(): Promise<void> {
     console.log('Authentication Result:', authResult.verification);
 
 
-    console.log('Write RSA key to virtual.passkey.rsa.pem');
-    const exportSuccess = authenticator.exportCredentialKey(regResult.attestation.id, 'virtual.passkey.rsa.pem');
+    console.log('Write ED key to virtual.passkey.ec.pem');
+    const exportSuccess = authenticator.exportCredentialKey(regResult.attestation.id, 'virtual.passkey.ed25519.pem');
     
     assert(exportSuccess, 'Credential key export failed - credential not found');
-    console.log('  RSA credential key exported successfully');
+    console.log('  EC credential key exported successfully');
     
-    console.log('Write credential ID to virtual.passkey.rsa.credid');
-    fs.writeFileSync('virtual.passkey.rsa.credid', regResult.attestation.id);
+    console.log('Write credential ID to virtual.passkey.ed25519.credid');
+    fs.writeFileSync('virtual.passkey.ec.credid', regResult.attestation.id);
     console.log('  Credential ID written successfully');
 
-    console.log('\n  Test complete - All phases successful with RSA keys');
+    console.log('\n  Test complete - All phases successful with ED25519 key');
   } catch (error) {
     console.error('\n  Test failed:', error instanceof Error ? error.message : error);
     throw error;

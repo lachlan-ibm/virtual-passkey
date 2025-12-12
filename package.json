@@ -46,5 +46,8 @@
   "bugs": {
     "url": "https://github.com/lachlan-ibm/virtual-passkey/issues"
   },
-  "homepage": ""
+  "homepage": "",
+  "dependencies": {
+    "@noble/post-quantum": "^0.5.2"
+  }
 }

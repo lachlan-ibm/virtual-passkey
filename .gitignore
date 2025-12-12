@@ -41,3 +41,6 @@ lerna-debug.log*
 
 # OS files
 Thumbs.db
+
+*.pem
+*.credid
